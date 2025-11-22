@@ -44,13 +44,29 @@ A modern, full-stack inventory management system built with Next.js 14, TypeScri
 
 ## 🛠️ Installation
 
-1. **Clone the repository**
-```bash
+**Clone the repository**
 git clone https://github.com/Somicool/Odoo-SPNIT.git
 cd Odoo-SPNIT
 
-2. Install dependencies
+
+**Install dependencies**
 Set up environment variables
 Copy .env.example to .env.local:
 cp .env.example .env.local
 
+
+🎯 **Running the Application**
+Development mode:
+npm run dev
+
+**Production build:**
+npm run build
+npm start
+
+Main Features
+Dashboard - View receipts, deliveries, and stock statistics
+Products - Manage product catalog with details
+Warehouses - Configure warehouses and storage locations
+Documents - Create and track stock documents (receipts, deliveries, transfers)
+Ledger - View complete stock movement history
+Settings - Manage account settings
