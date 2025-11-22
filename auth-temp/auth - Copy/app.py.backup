@@ -1,0 +1,248 @@
+from flask import Flask, redirect, url_for, session, render_template, request, flash
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
+from flask_mail import Mail, Message
+from google.oauth2 import id_token
+from google_auth_oauthlib.flow import Flow
+import requests
+import os
+import random
+import string
+import base64
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = Flask(__name__, template_folder="templates")
+app.secret_key = os.getenv("SECRET_KEY", "dev_secret_key")
+
+# Flask-Mail configuration
+app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
+app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True') == 'True'
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_USERNAME')
+
+mail = Mail(app)
+
+# Flask-Login setup
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
+# Mock User Model (Replace with DB in production)
+class User(UserMixin):
+    def __init__(self, id_, email, name):
+        self.id = id_
+        self.email = email
+        self.name = name
+
+
+# Google OAuth Config
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5000/callback")
+
+# OTP storage (in production, use Redis or database)
+otp_storage = {}
+
+def generate_otp(length=6):
+    """Generate a random OTP"""
+    return ''.join(random.choices(string.digits, k=length))
+
+def send_otp_email(email, otp):
+    """Send OTP to user's email"""
+    try:
+        # Base64 encoded STOCKMASTER logo
+        logo_base64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAmQAAADICAYAAABk7r1hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAABzGSURBVHgB7d0JfFTlvf/xZ2YyWUhCEkISlrCDrAqCgCyKC4K4oKJYtdal1Vq11lZvW2ut1rbX3nvbW/XaemvVarVqXVqXutS1LrhUQBBBRZCdhH0LhCxkJjPP/zknYUKSmWSZZGbyfb9e85ozc86ZOSHJfPM8z/M8RkRERCRmbBHRaKKMiYiIiMSMDRERERGJKRsRERGRmLERERERiSkbERERkZiyERGJlcUi/+vOOPa8W2Tl7yJSXwZXv/rWqBZt00tKS1e6pxcRaXrS0jNSU9PT81xdO3Up8Hicbc+p/hzi1j7XJiIxZbMRkRiz2S0WJ0lbXV/w0P3vt01z2GxmHrG9gOgkhMVhxmYtb7Nbnf/90FPzzxQRabpsNps14M3Sw79p80r9lCci0uxZ7TYb3kbNIpWSaopIvNhsIhIzrSxW8h4qr/OrzS+/NCMldWp5eerGilrm/OSOO2W1iEi8EBEREYkZGxEREYkZGxEREYkZGxEREYkZGxEREYkZG5FG7aefPhFHTZ066bLb7RWYvlFEJK4oRUYatQ8++MBlszpKyooqbmjftl1ayzat3V6P5w8lRSX/e+edF8tERGJIiUSl0bLZrBZ3ubvDqFOHPXfYsccMPveC8/r+7sHfD+rSvdNLZy44c8i0v09bX1pSZhARiSFVymNq1apVJweDgY1r165d3717987u7h0/e+aZZ1rts+23VlA6m5GR0dk3+Jrdy5d+0n3RBx93mnjVj0f/+A/3jmj+9Z133hnS+Jx+2tnnLH/pueemH7N9x+fttm1dkF8u8pmISL0hj5k1uHfX92bPmHFG+86dvmnXrv0bBw/OP0dEpF6QxwyJMyPvj3gBiWUfI6GGiDR2R54+/Mlvvv32u57f/vz6lFG3j+7xq7/dPcm9/DG3bP/dd9+8Wt32r33+RXdE/x1I6CPfuPcXS5SQifhiQNr8Wxl7M4tIowYnWuDIkTscGLg6rmnznksGXjLQufTjL3s0pCRhQVAOvl+LHH300WsL8grunXfv68svuPJ84/Lrb+kwYfIppy55+KEr6nLZXy59f0hqakq2z+eri+3WGj5/u2Aw2Orgg/tfYFht2YPGn7nE3feChqQfISJxK13qZvvO/a17DezzyJxfzr183Y6dqw/qn9/3uZeeHelyL38sZP3K1StH2Kz2DytKyn/o/i68U1JesfyEk4cte/Xllya7+97z40Ugr8H9z9t/wvPPjSd9hQ/x82sNvy8Pdb+t+YNjGnW/S0SqKPGVWw4ZNN59Tt0qKCj41vnM3nrpX8/Nmnbr0LNGj+jy9+df6OlpnYX9C4rs1/36qhce/uPfTnPLTzp1+Ke7dhU+1rNbz+JHn/jH2Yv+/dZ+kSu2bt9+QUHBDo91GtKnb7+vxl06duyQsydUrFJEGovbfznruPt++cDwrZs2H9/z+MNXpk8Z89zxZx+9xP//SREJmTnfveD1+++//48n+l6+eVz7nLTrVq1bO++XD9w5s12P1oM7/+Kiwx2/eODXU/wTUv/1+Dtnl+/zfvXyH//xrXvVb/70m7tG/eBvfx39q1/fP/TME89eO2v+2S/XtJ2Fn3x2e1qLtNYjxh73zbNP/uek0HYffPTZOdcvev7SWr/Z6qN5B/RBioi0nH3+mZuu+ce9i1cvXZk+e+YdI8YfP3Lh8i93/2VPyXaTezmz1n7+/azG7+03PjtjRt/f/vSec0e3Sq1Yd/Lpx73y0D0PXHv11fc99/jfzqlumzt37Wq1Z89uR8e27XZbrBajTad2g7d+u01v0kWkUSgvcltKS0q3rfl667gvFv/vrV49Dl5w4glD/nHcwIH/2vj11qu+Xrvmka8+X+Hbu2dPl9JS9yen3vDjL++ZftfdJ9528m//nJ//5t13P3rGMcMHvHvYSUM/+MWoSS8u/eSztadcdNH6/da5+KPlx2ds3rXn/Hv+MPvqO396wrGTjut64O+ebQJERJqNteu/6VtasudLd9d/h5aWBGqbL+zsY4+8fdqv75h15O9+c+UNRUUl2Xd8/NQVU48+1HG0++8jfvjnu47p1uu1my697uWUlFRXm7bZt0++6vrXG2xIyN3VLKpqw4YNG1Yey6VhAiJxbO2Gree26dgh13/dA0+9cVJlkYGYwYN+/fbXX0y64qbrNq1etebi04b3mnr9lPPc/dqNvePmr1Ys3PLOqHFHbrv7J/dc1nfo4BUFBTvWH/R//Z9Z8Njcv/Qd2vu99JSU9Z1TUr//ctn7l99605Rfttmy3V/r74XP/+87nV59acGyp/787RGBSuv7n6f+deb4K67a+r/NPo1hgq97QI/9ktoS7EUi0sw9N/+lsdltktuP/t2t6xd8tOx7+60zevvHn3167RlX3lha4fO16ZLT7osp/338vM7d+/To2afXe8t3+j74xfUP3Ou/bo+h/W9e8cmK0SVl5dd1btum1BrO9Fzd1U1VlBCvmxPz0zNs7//8znv6X331lVNERGIsLTVly4yptz53+umnlN50y/WHDRh49IqvV6+++/Slv3qvsu/UO38y7fnnnl/Q/9CBXx8ysPfZnz7/wglX3HjuuaFE/lctf+jbb3efMmnCmR+P7j9gx4q8Yud5v75x3ivPv3Jm0L2+HH74oFsfevTB3mMuumjSQQcN+Op7/3ncNf/82Qur32sQ3t+LiEhitUgp/+YHV193X/c+PVf+8/HHjpo046wzMtLbLH36n09eOf3Wm1+2paTYD/u//qcueOPVRdfc8+O7VpdU+G4J13fDjm1bPm/ftu1hL73wUpfb7vhRz3U79k3+N/OhJ8fst8wK/3Xy5Mk/+OThx649dsiR/a+ddPXF3vLq+u9E+oN7fvGHVz5b9Hm/gX0XdjnsQOvbevbtcuG0Hy3eV//atR/+t9vRM6ZOue2Gn/wk17dbRKQxc5yccl3Fx9/kjV/4avPZgTsHD7vlT/e/OPqiyzu/N/+tEW2cnTMPGzSw6+sD+g1c+/Zrr424+o5bz/dv4uiRI7Z8tfKrGX999MFeZ505e+pP7v3xT+6+ffT5P/vjgOqqoSedOmLNug0b7/n/7r3vvr/f/+tf//EPj3WvWL+89XFHH3Kbu6s92LU9Fy1a9r1tt++WF/jllj0F22697D+d0pZ279Z1Xbu01CuuvXzq9Nz8vO0NPexO4hSJRAWioqJCVYfGKhAQd5U/WFxakL1n1/aA+/ScVFfau3nzlm3u5Y8NHNDt+d273rvrxqse/+KdNzODfv+1WzavHvvr++4dV+2OyvdF9zy1w2q3fvLtJ9s6l63Y1Xnu21d90S4n67sR/Qb1+GZ73up5HyzqWen3eweXuSt6PvnSkz//x1//OquwqKR/sKLiDrvd2uP3d/1m2Oxpt5ybkpJS8u7rt/3xnPumP7m+e/Zql9P+B/d++VVdd++o/Nmj+/3inw/l5VZXkRORuLG7sLDcvfw/u/es3e7yVJZgUtvkpF1Ysc/7GwxlcVyzfdP2V55+ZM7Sq372+7MW7fy4z8OPPjT0ymuumPjAX+695vPXXj3K/d5Xv8y90O4IbBs//uwPl67a2mbhXw/0XtPBfs/1U3/1xebtm+9/af7v3cnIzN5w4LX5F/j/PqxTp/Z/+Wzen//0h7vmPvCXv/x+1KQz/9/SJ/5e3Xv/JZu/Xb/N5S5fvP/9wZsHdO9wfq+0vefevfmNw06+/qofD+jSa+3d0x+67sR7jjj/6MG9P8vNzW1WV+mSABmJFgwGpaKiwqKfmWvUPO5yCRJQhoKBoKWswuNxu8tJg/oNvsO9/LEO7dvLOx+8f/jDv7ljdFbPrm/gSsv/3rVq1VfDc9u2zekzsM/cZe+vvOzIuy96afUX395d5Lv26a9XfnPd8QP7pR04/vSjVqz46r2bJ/3g6DuuverZp//w/J+fL+l4TclnX51w1913nnbCVdMePfbko977+W+v++2P7rr1T7e89c36U7bm/LLLrBf/+Y/XF742ynHk4L5Pz/z1/eveffeKabPv/N/lV1yff+Xll7/43T5FGr3Ne/aUHPeDvWMfuP+uRfPefq/Xnz94dOCiT5b2/vj9xf3Pu3DixC3L3zvwT/fdeeE999z35x0lRT279/3Bgw8/+PhxE4de+uhjf/nBrNk/fTgtPfWLVatXXeZ7ct/v/nDfXXd9+M/ZrzjSC34z9NrjX1uwbe4p53Y+u8ffwv/u/OO+u5f9+1/vHLll++bMvt165P9s1qzzbr/+Z48dPHz4mu/2OfD9Gf+PXv+u97brr73mnPadO2yYdfttsx+6/66FZ11wQcVpp5265H+vvu73V0pFpHk5bfLUuf/68D8Xjrvusg8/+Ncnx+Xt3LSv/PNnHFuy0a1fvTrXVuH3ju/Vq+fhPboW/eDqy+e+1/nIp79a/c2H8795rNOen15/39xnHntj3NVXfe/vH368+pX/vPL+6OqGLX3v7bPO3n/AkN9edc9P/ztl+g1/KvXdfM8VsysWvXtMoPS88b2nHTf/gz8v/PvwYODiEXddfdM1V0//asuOf5yx6OX9vv/L7C+P//a++46d/vO7f3HBD866omOnjjsuu/mmVSS2k9iSABmJpXb+4YmfumWN+8G3S1KdTtv+F/bRd+SRR87+x8MvXJQI29m8dVvXF19+o1dR0d4KWVWY/8VnC94+ybdvy8hd23ckpaemuRyrVy6/4rTRkzpc+avbvr7ikmvnD7v1mA/++sB9xy9btbz17oLD3YHaO4tG9u07qF1W64yMggPuKUedN/K5b9eu+XTNV2vSRp02pN2BIwZs+Oq/37Zcd4BFTp3KLSIxscfrs2OgxC5Pd/fuLy76Ut7Y6v3RtVP+4P7HXeR0//2dCRde+NGXX+Z9PGTQ1Rfcd8vDlwwfPqJn+5y29/16xk3TZtx7zy9atXJvCFT4zwjKZ3e+8OKDR44cdf1Vl13wTJd2bdfsdafn+Owu3blj5/kH+Vw7+/TuOWr37N5dLKcdedXH25YPefzhl/ve///+3yeLv1zWyrsn/Ou5b/dEHjnlB//n/uLrH1549U9feLtzzqkHHdz2y759DuhvS/P2qHs/9rRr1/a7EwYN2Y3tdUtNtXv7dOvxVv/+XX/W6KtkIhI3Nu/Z7XG/vOTF+WuWrr/uB6c8/P4RJ3e5/G+/X/LZN1s+n/7OizsP6d97l/P9j1ZfMPOnj33wX//pf/z44i82frvm/P/O3NhqSbcDB34vK+/Gs46/ffP2HSd3t1d0ysrILjv/3FPPqK5qdtKVV77xxhuL+vu+SL8qgv/DV+T58kIzfuNLOXRof+S64UOO+7Zwz9RuXbs4evVtvXnChKGfLV6y4oGZD4w7I/S1A62rq6+1S8/ufVoVFhXkZrdu/eje70aA25PTPj1/axtdzJPY0lABafTaH9h2yh+u/vt/Vr25ds+u3Z1dHl+vZct+NTEtPT09LT11W9fe3QvTEqSfd/ihhx47cODA3YceMqDXPb++44pDLrvupJsfvuuUEXfe9fC027+7vddH77z/5P5D/BwVPq+twu9rlZqWmrzb+72lPp/P77VabdaP3vnPwU8u+I/7+7+UcHHzzuqufCMiDe6rr1ZecMxP7n/4gjN/eMNvfj/pz/f89qblq75YcfGP731k+uQ/3fG7d0OJ/Yq+/Wb4gtdeN2EQwpcNPuzwN5595k/Pz7jvt/90RL6W+7u9Vw468aYbb17z6D/+fuwrC5+++7nX3h3Yvfehhz/+xMOHr/pydeGo/1vz67c++2L0B6+9s//vLi3N7vJvr4fF/7/a9P8r/W//1x989JdBv739t78cd/rp3T//7D+v/PmBvy5b/dXq+x/7+7P7p+D9l7z5xnGLvvjv9vb2C3pdMOzoO3dv2tA+X0Tkf+/2YsXKoqEjf/i3lctXbT8sKbDb6SqybF2ze3S+z+vq0LnTtq2d0wv7J1+x8aCrR0/4/KV31v75TbfmFt96/a+aQ4nYhp/dYp1kqnqn1bGrzeuHc+EfH/7bn8ZPuWBtWqD3Yfu2b7ll0NAe/zfhoou+/Mdbr570v+Vvj6q+SbbfP4tLyhb/dsYvj/j7A38bdvst/yft1CEnLH/7b79e/syLl1Qm//33s3bNtwcc3KPbhyJNikokUqd27twZbNWqFRaR6gwfPvzq0tLSPj6fz1pUVGTp1avXPG3bJNBLbpFYw1UW/evnV1Gx2WwViPb39U+65L+v9FQqQkQkDmGYkiHhC/ufr0sLCgp2I2kfvgdcIhJJpfAeQcIL99lqeh8g/UZ1/SglGaJw7+vz+f4bDAbPzMrK+h+FUxGRhoe/aZc2Qz7uxw0YQzYgHCb9l9ss/vG/AKL+H1Zk42+x+X8VIiIiIg1ORK/+HnVL0NeQFEVEREQahGpZIiIiEjM2IiIiIjFjIyIiIhIzNlJDmNHd6l/+8P9d5V/2QCjnX1VCQr/vlsgfcX2SdfmrMW9rP0okWJZfTyQYCUfiUPnbJCL8Ww3/b//nfDDoDv4eiUglqxrE01gF3L8pD/6W7fE/A4Hv+hdpvNbvU0J/q0JvgbZjxl4g+eQj3nNXnPPA/4qISDMww2Kx7MZN/5W/z+vLcr8c4e9LPtz3VsptI/Wu3O32VFCe+y1Y+bu2YJqbf7slCLsrf8PfrQ/PwTTj7z9l0bv0y8/eL8R/lI0PmP6zzX/5/f55+Y8fftnvexk/3/03/qJn4eLRHjc6+28nfL4Qr+Z9+qPNxvZE7kVEpLGxFxQUtPNfPJ3E77e7l78Y+i1lhF+gfytRfkCr7ZzqzvGX/i0VdS8n/nkz/IfMwE/hfQ0/I7Tfs7Zw+V/ffd/qv+w/+q82n+PvoXxg9/vO8f8dV19VLnYG/D+f8n34v+3/Z2z+v0P/30HwB7/2W7V+5TpV+/X//fr/wRuY6f4/VW0j9LcuIiKNnONg/5+fhZPnhZ+h5XgOCr/lUPvxn2N/vR/d96/m8u9fx//6P7rpO/z+nQr9Lvev/oX34f8WI+I3WPP1wvdzYR/hD5L4d1/5e/Xfr/+/rnPdMUl/R0FEpGmwHB/1QzX/8Vt//gu/hR++V/Vr5dCf4Vvlr9+GX/y96t//I9oFw/fB8Pl4/rf8m/Q/Ly+8Xfjv/s/+MRP+c/2f9/+G/O+u87//X+VW/P8XDL9VvsNsIiKNmeOo8Iubo27w3xZ+qvLzd/s/8L/+37/9bv3qXg+Eb+P1ylr+9f/Xfn+uRnwdvzf/4t/s/F+HzqpaDv/J/1b4tfCy0NYi9+H/N1O5r+r2Efo7rvo/+Pezc3+biEhjZjnF/+L76v7rr/G/+v/Vv11+fQD+Fr6Y/+Py+O9D+XQz/PsVNWzZ/3P/t/+v/K/C+wh3LfC78v+d7vcWfoau1hOq1l36o4hIo2c5OfxmLdJuVf2mq39RXuevV/3e/R/Xl4LDv0XC5+zXH/G//e/6f34P//VF1M/+y/d/3oWf+zf5/af6t1H9v+re/LcQuj/Vf/9f3ZuIiIiIiIiIiIhIs/dffxT9n/vD/6sqz9f0Fn/+PQvf8d9Q5f+Qf/jd/y3yrf39mf7/N/7f+a9f06/+/b16/PuzSAu0v9+a/zuGf/z77e//x4GX8B//Fio/2OPfvuO//f31REREJC7gZ3crd0QdEdWlKPzOd93/of35k6hUXr5fIv/wIv74Wf4Z/FH0xk+/8R8FUXm+//eP/P8Uf7r/HqNSdPn/M/hr+RMh/Iv9f1R9dUBEREREJDFgRJb1ypgfhH/W/61/gn9/HX/CqJSDIbRs/9eL/Y/+f/d/9T/C/1f1Lf6k6I9V5xP8f1P/PfwX/j/xz//7z/h/hP+E/6f/u/6v/Nfy7/mv4R+p4r+EP9e//L+r0v4f++/i+s9P4e/z3+q/hH/u/yD/8v1af3b/b/vP3y/u7yd+/HqB/7n7r8//+Lf+x/oX97fv++l/g39hf8P/O/83+e/+/wN+ZqH4L3iHAAAAAElFTkSuQmCC"
+        
+        html_body = f'''
+        <html>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f4f4f4; padding: 20px;">
+                <div style="max-width: 600px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                    <div style="text-align: center; margin-bottom: 30px;">
+                        <img src="{logo_base64}" alt="STOCKMASTER Logo" style="max-width: 400px; height: auto;">
+                    </div>
+                    <h2 style="color: #2c3e50; margin-bottom: 20px;">Dear User,</h2>
+                    <p style="font-size: 16px;">Your One-Time Password (OTP) for accessing your <strong>STOCKMASTER</strong> account is:</p>
+                    <div style="text-align: center; margin: 30px 0;">
+                        <span style="display: inline-block; background-color: #e8f5e9; padding: 15px 30px; border-radius: 8px; font-size: 32px; font-weight: bold; color: #34A853; letter-spacing: 5px;">{otp}</span>
+                    </div>
+                    <p style="font-size: 16px;">This OTP is valid for the next <strong>5 minutes</strong> and can be used only once.</p>
+                    <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
+                        <p style="margin: 0; font-size: 14px;"><strong>⚠️ Security Notice:</strong> For your security, please do not share this code with anyone under any circumstances — including individuals claiming to be from customer support or the <strong>STOCKMASTER</strong> team.</p>
+                    </div>
+                    <p style="font-size: 14px; color: #666;">If you did not request this code, please ignore this message and consider securing your account immediately.</p>
+                    <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                    <p style="font-size: 12px; color: #999; text-align: center;">This is an automated message from STOCKMASTER. Please do not reply to this email.</p>
+                </div>
+            </body>
+        </html>
+        '''
+        
+        text_body = f'''Dear User,
+
+Your One-Time Password (OTP) for accessing your STOCKMASTER account is: {otp}.
+
+This OTP is valid for the next 5 minutes and can be used only once.
+
+For your security, please do not share this code with anyone under any circumstances — including individuals claiming to be from customer support or the STOCKMASTER team.
+
+If you did not request this code, please ignore this message and consider securing your account immediately.
+'''
+        
+        msg = Message(
+            subject='Your OTP Code - STOCKMASTER',
+            recipients=[email],
+            body=text_body,
+            html=html_body
+        )
+        mail.send(msg)
+        return True
+    except Exception as e:
+        print(f"Error sending email: {e}")
+        return False
+
+@login_manager.user_loader
+def load_user(user_id):
+    user_data = session.get("user")
+    if user_data and user_data.get("id") == user_id:
+        return User(user_data["id"], user_data["email"], user_data["name"])
+    return None
+
+@app.route("/")
+def home():
+    return render_template("index.html")
+
+@app.route("/login")
+def login():
+    flow = Flow.from_client_config(
+        client_config={
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://accounts.google.com/o/oauth2/token",
+                "redirect_uris": [GOOGLE_REDIRECT_URI],
+            }
+        },
+        scopes=["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"],
+        redirect_uri=GOOGLE_REDIRECT_URI
+    )
+    authorization_url, state = flow.authorization_url()
+    session["state"] = state
+    return redirect(authorization_url)
+
+@app.route("/callback")
+def callback():
+    flow = Flow.from_client_config(
+        client_config={
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://accounts.google.com/o/oauth2/token",
+                "redirect_uris": [GOOGLE_REDIRECT_URI],
+            }
+        },
+        scopes=["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"],
+        redirect_uri=GOOGLE_REDIRECT_URI
+    )
+    # Restore state from session for security
+    flow.state = session.get("state")
+    flow.fetch_token(authorization_response=request.url)
+    credentials = flow.credentials
+    id_info = id_token.verify_oauth2_token(credentials.id_token, requests.Request(), GOOGLE_CLIENT_ID)
+
+    user = User(id_info["sub"], id_info["email"], id_info["name"])
+    login_user(user)
+    # Store user info as dict, not object
+    session["user"] = {"id": user.id, "email": user.email, "name": user.name}
+    return redirect(url_for("dashboard"))
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    user = session.get("user")
+    name = user["name"] if user else "User"
+    return render_template("dashboard.html", name=name)
+
+@app.route("/logout")
+def logout():
+    logout_user()
+    session.clear()
+    return redirect(url_for("home"))
+
+@app.route("/otp-login", methods=["GET", "POST"])
+def otp_login():
+    if request.method == "POST":
+        email = request.form.get("email")
+        if not email:
+            flash("Please provide an email address", "error")
+            return render_template("otp_login.html")
+        
+        # Generate OTP
+        otp = generate_otp()
+        expiry = datetime.now() + timedelta(minutes=5)
+        
+        # Store OTP with expiry
+        otp_storage[email] = {
+            'otp': otp,
+            'expiry': expiry,
+            'verified': False
+        }
+        
+        # Send OTP email
+        if send_otp_email(email, otp):
+            session['otp_email'] = email
+            flash("OTP sent to your email!", "success")
+            return redirect(url_for("verify_otp"))
+        else:
+            flash("Failed to send OTP. Please check your email configuration.", "error")
+            return render_template("otp_login.html")
+    
+    return render_template("otp_login.html")
+
+@app.route("/verify-otp", methods=["GET", "POST"])
+def verify_otp():
+    email = session.get('otp_email')
+    if not email:
+        flash("Please request an OTP first", "error")
+        return redirect(url_for("otp_login"))
+    
+    if request.method == "POST":
+        entered_otp = request.form.get("otp")
+        
+        if email not in otp_storage:
+            flash("OTP expired or not found. Please request a new one.", "error")
+            return redirect(url_for("otp_login"))
+        
+        stored_data = otp_storage[email]
+        
+        # Check if OTP is expired
+        if datetime.now() > stored_data['expiry']:
+            del otp_storage[email]
+            flash("OTP expired. Please request a new one.", "error")
+            return redirect(url_for("otp_login"))
+        
+        # Verify OTP
+        if entered_otp == stored_data['otp']:
+            # OTP is correct, log in the user
+            user = User(email, email, email.split('@')[0])
+            login_user(user)
+            session["user"] = {"id": user.id, "email": user.email, "name": user.name}
+            
+            # Clean up OTP
+            del otp_storage[email]
+            session.pop('otp_email', None)
+            
+            flash("Login successful!", "success")
+            return redirect(url_for("dashboard"))
+        else:
+            flash("Invalid OTP. Please try again.", "error")
+            return render_template("verify_otp.html", email=email)
+    
+    return render_template("verify_otp.html", email=email)
+
+if __name__ == "__main__":
+    app.run(debug=True)

@@ -1,0 +1,18 @@
+{
+  "status": "commited",
+  "type": "frontend",
+  "scope": "codebase",
+  "localEndpoint": "http://localhost:3000",
+  "loginUser": "snehonpurpose",
+  "loginPassword": "Sneh1000",
+  "executionArgs": {
+    "projectName": "Odoo-SPNIT",
+    "projectPath": "C:\\Users\\brahm\\OneDrive\\Desktop\\Odoo-SPNIT",
+    "testIds": [],
+    "additionalInstruction": "",
+    "envs": {
+      "API_KEY": "sk-user-Gba0A0XAvhzGl-pZJZwzlpaVoTpl1T_S0_j3WyrmO1C9jVwiNsV3BKO0_PAuzaFtdSqjxNGlXJ922b13iwzyBTOvaJVa2hfHUbTSYo3qUoiU9SPSKBvtM8ScNQpkomTF_PU"
+    }
+  },
+  "proxy": "http://9cdaa90e-b7a2-4659-8aa5-7558c4c51ddb:FuMH2c4YE4Tin8XokzWdFTQD6WHGTwgV@tun.testsprite.com:8080"
+}
